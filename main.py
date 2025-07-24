@@ -6,12 +6,6 @@ import os
 import platform  # Para detectar o sistema operacional
 import tkinter.font as tkFont # Para manipulação de fontes
 
-try:
-    from ttkthemes import ThemedTk
-    HAS_TTKTHEMES = True
-except ImportError:
-    HAS_TTKTHEMES = False
-
 # --- Constantes ---
 # Obtém o diretório onde o script main.py (ou main.exe) está localizado
 SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0] if getattr(sys, 'frozen', False) else __file__))
@@ -98,14 +92,13 @@ class MainApp:
         base_font_size = 10
         title_font_size = 16
 
-        if not (HAS_TTKTHEMES and isinstance(root_window, ThemedTk) and root_window.tk.call("ttk::style", "theme", "use") != ""):
-            current_themes = style.theme_names()
-            theme_to_set = 'clam' if 'clam' in current_themes else ('vista' if platform.system() == "Windows" and 'vista' in current_themes else ('alt' if 'alt' in current_themes else 'default'))
-            try:
-                style.theme_use(theme_to_set)
-            except tk.TclError:
-                print(f"Aviso: Falha ao aplicar o tema ttk '{theme_to_set}'.")
-        
+        current_themes = style.theme_names()
+        theme_to_set = 'clam' if 'clam' in current_themes else ('vista' if platform.system() == "Windows" and 'vista' in current_themes else ('alt' if 'alt' in current_themes else 'default'))
+        try:
+            style.theme_use(theme_to_set)
+        except tk.TclError:
+            print(f"Aviso: Falha ao aplicar o tema ttk '{theme_to_set}'.")
+
         style.configure("TButton", font=(font_family, base_font_size, "bold"), padding=(15, 8))
         style.configure("Help.TButton", font=(font_family, base_font_size - 1), padding=(8, 5))
         style.configure("Title.TLabel", font=(font_family, title_font_size, "bold"))
@@ -163,13 +156,6 @@ class MainApp:
 
 if __name__ == "__main__":
     # A lógica de despacho foi removida, main.py sempre inicia a GUI.
-    if HAS_TTKTHEMES:
-        try:
-            main_root = ThemedTk(theme="arc") 
-        except tk.TclError: 
-            main_root = tk.Tk()
-    else:
-        main_root = tk.Tk()
-    
+    main_root = tk.Tk()
     app = MainApp(main_root)
     main_root.mainloop()
