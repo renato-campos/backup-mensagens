@@ -8,54 +8,11 @@ from pathlib import Path
 from typing import Optional, List
 import tkinter as tk_module  # Alias to avoid conflict
 from tkinter import filedialog, messagebox
-def sanitize_filename(
-    filename: str,
-    fallback: str = "arquivo_renomeado",
-    remove_msg_prefix: bool = True,
-    normalize_leading_number: bool = True,
-) -> str:
-    sanitized = filename.strip()
-    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
-    if remove_msg_prefix:
-        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
-    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
-    sanitized = sanitized.strip().rstrip(" .")
-
-    if normalize_leading_number:
-        match = re.match(r"^(\d+)(.*)", sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:
-                sanitized = str(int(number_str)) + rest_of_name
-            except ValueError:
-                if len(number_str) > 1 and number_str.startswith("0"):
-                    sanitized = number_str.lstrip("0") + rest_of_name
-                else:
-                    sanitized = number_str + rest_of_name
-
-    if not sanitized:
-        sanitized = fallback
-
-    if sanitized.startswith("."):
-        sanitized = f"{fallback}{sanitized}"
-
-    suffixes = "".join(Path(sanitized).suffixes)
-    base = sanitized[:-len(suffixes)] if suffixes else sanitized
-    if not base:
-        base = fallback
-        sanitized = f"{base}{suffixes}" if suffixes else base
-
-    windows_reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    }
-    if base.upper() in windows_reserved_names:
-        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
-
-    sanitized = sanitized.rstrip(" .")
-    return sanitized or fallback
+from common_utils import (
+    extract_header_value_from_raw_eml,
+    is_ffs_aux_file,
+    sanitize_filename,
+)
 
 # --- Constantes ---
 # Limite prático para caminhos no Windows (MAX_PATH (260) - 1 para nulo)
@@ -89,9 +46,6 @@ class FileArchiver:
         # Geralmente o mesmo que watch_folder
         self.archive_root: Path = Path(archive_root_str).resolve()
         self.log_folder: Path = self.archive_root / log_folder_name
-        self.setup_logger()
-        self.excluded_folders_lower: List[str] = [
-            f.lower() for f in DEFAULT_EXCLUDED_FOLDERS]
 
         # --- Counters and Summary ---
         self.moved_files_count = 0
@@ -101,6 +55,9 @@ class FileArchiver:
         self.deleted_empty_folders_count = 0  # Novo contador
         self.summary_message = ""
         # --- End Counters and Summary ---
+        self.setup_logger()
+        self.excluded_folders_lower: List[str] = [
+            f.lower() for f in DEFAULT_EXCLUDED_FOLDERS]
 
     def setup_logger(self) -> None:
         """Configura o logger para registrar apenas erros."""
@@ -214,7 +171,7 @@ class FileArchiver:
                            item_path.resolve() != self.log_folder.resolve():
                             self.process_folder(item_path)  # Chamada recursiva
                     elif item_path.is_file():
-                        if item_path.name.lower().endswith(".ffs_db") or item_path.name.lower().endswith(".ffs_lock"):  # Ignora .ffs_db
+                        if is_ffs_aux_file(item_path.name):  # Ignora .ffs_db
                             continue
                         self.process_file(item_path)
                 except OSError as e_item:
@@ -285,8 +242,7 @@ class FileArchiver:
 
         date_str = msg.get("Date")
         if not date_str:
-            date_str = self._extract_header_value_from_raw_eml(
-                eml_path, "Date")
+            date_str = extract_header_value_from_raw_eml(eml_path, "Date")
         date_obj = self._parse_date(date_str, eml_path)
 
         year = date_obj.strftime("%Y")
@@ -299,28 +255,6 @@ class FileArchiver:
             self.logger.error(
                 f"{eml_path.name} - Motivo: Erro ao determinar pasta de destino ou iniciar movimentação. Detalhes: {e}")
             self.error_count += 1
-
-    def _extract_header_value_from_raw_eml(self, eml_path: Path, header_name: str) -> Optional[str]:
-        """
-        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
-        (ex.: BOM no meio dos headers).
-        """
-        encodings_to_try = ("utf-8", "latin-1")
-        header_prefix = f"{header_name.lower()}:"
-
-        for encoding in encodings_to_try:
-            try:
-                with eml_path.open('r', encoding=encoding, errors='ignore') as f:
-                    for line in f:
-                        stripped_line = line.strip("\r\n")
-                        if stripped_line == "":
-                            break
-                        normalized_line = stripped_line.lstrip("\ufeff")
-                        if normalized_line.lower().startswith(header_prefix):
-                            return normalized_line.split(":", 1)[1].strip()
-            except Exception:
-                continue
-        return None
 
     def _parse_date(self, date_str: Optional[str], file_path_for_log: Path) -> datetime:
         """Tenta analisar a string de data. Retorna datetime.now() e loga erro em caso de falha."""

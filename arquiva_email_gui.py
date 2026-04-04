@@ -7,54 +7,11 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from pathlib import Path
-def sanitize_filename(
-    filename: str,
-    fallback: str = "arquivo_renomeado",
-    remove_msg_prefix: bool = True,
-    normalize_leading_number: bool = True,
-) -> str:
-    sanitized = filename.strip()
-    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
-    if remove_msg_prefix:
-        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
-    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
-    sanitized = sanitized.strip().rstrip(" .")
-
-    if normalize_leading_number:
-        match = re.match(r"^(\d+)(.*)", sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:
-                sanitized = str(int(number_str)) + rest_of_name
-            except ValueError:
-                if len(number_str) > 1 and number_str.startswith("0"):
-                    sanitized = number_str.lstrip("0") + rest_of_name
-                else:
-                    sanitized = number_str + rest_of_name
-
-    if not sanitized:
-        sanitized = fallback
-
-    if sanitized.startswith("."):
-        sanitized = f"{fallback}{sanitized}"
-
-    suffixes = "".join(Path(sanitized).suffixes)
-    base = sanitized[:-len(suffixes)] if suffixes else sanitized
-    if not base:
-        base = fallback
-        sanitized = f"{base}{suffixes}" if suffixes else base
-
-    windows_reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    }
-    if base.upper() in windows_reserved_names:
-        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
-
-    sanitized = sanitized.rstrip(" .")
-    return sanitized or fallback
+from common_utils import (
+    extract_header_value_from_raw_eml,
+    is_ffs_aux_file,
+    sanitize_filename,
+)
 
 # Definir constantes do arquiva_email.py (ou arquiva_raiz.py)
 MAX_PATH_LENGTH = 259
@@ -67,9 +24,9 @@ class FileArchiver:
         self.watch_folder = watch_folder
         self.archive_root = archive_root
         self.log_folder = log_folder
-        self.setup_logger()
         self.processed_files_count = 0
         self.error_count = 0
+        self.setup_logger()
 
     def setup_logger(self):
         """Configura o logger para registrar apenas erros."""
@@ -121,7 +78,7 @@ class FileArchiver:
         files_to_process = [f for f in os.listdir(self.watch_folder)
                             if os.path.isfile(os.path.join(self.watch_folder, f))
                             # Ignora .ffs_db e _lock
-                            and not (f.lower().endswith(".ffs_db") or f.lower().endswith(".ffs_lock"))]
+                            and not is_ffs_aux_file(f)]
 
         if not files_to_process:
             # Se não há arquivos, não há o que processar (não é um erro)
@@ -174,8 +131,7 @@ class FileArchiver:
 
         date_str = msg.get("Date")
         if not date_str:
-            date_str = self._extract_header_value_from_raw_eml(
-                eml_path, "Date")
+            date_str = extract_header_value_from_raw_eml(eml_path, "Date")
         # _parse_date lida com data inválida internamente
         date_obj = self._parse_date(date_str, eml_path)
 
@@ -185,28 +141,6 @@ class FileArchiver:
         archive_folder = os.path.join(archive_year_folder, year_month)
 
         self.move_file_to_archive(eml_path, archive_folder)
-
-    def _extract_header_value_from_raw_eml(self, eml_path, header_name):
-        """
-        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
-        (ex.: BOM no meio dos headers).
-        """
-        encodings_to_try = ("utf-8", "latin-1")
-        header_prefix = f"{header_name.lower()}:"
-
-        for encoding in encodings_to_try:
-            try:
-                with open(eml_path, 'r', encoding=encoding, errors='ignore') as f:
-                    for line in f:
-                        stripped_line = line.strip("\r\n")
-                        if stripped_line == "":
-                            break
-                        normalized_line = stripped_line.lstrip("\ufeff")
-                        if normalized_line.lower().startswith(header_prefix):
-                            return normalized_line.split(":", 1)[1].strip()
-            except Exception:
-                continue
-        return None
 
     def _parse_date(self, date_str, file_path_for_log):
         """Tenta analisar a string de data. Retorna datetime.now() em caso de falha."""
@@ -550,7 +484,7 @@ def main():
         # Verifica se houve erros para diferenciar de "nenhum arquivo encontrado"
         if archiver.error_count == 0:
             # Verifica se a pasta de monitoramento realmente tinha arquivos (exceto .ffs_db)
-            has_files = any(os.path.isfile(os.path.join(watch_folder, f)) and not f.lower().endswith(".ffs_db")
+            has_files = any(os.path.isfile(os.path.join(watch_folder, f)) and not is_ffs_aux_file(f)
                             for f in os.listdir(watch_folder)) if os.path.exists(watch_folder) else False
             if has_files:
                 summary_message += "Nenhum arquivo foi arquivado (possivelmente devido a erros ou já estavam organizados).\n"

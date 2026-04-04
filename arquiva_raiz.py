@@ -1,60 +1,12 @@
 import os
 import shutil
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox
-def sanitize_filename(
-    filename: str,
-    fallback: str = "arquivo_renomeado",
-    remove_msg_prefix: bool = True,
-    normalize_leading_number: bool = True,
-) -> str:
-    sanitized = filename.strip()
-    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
-    if remove_msg_prefix:
-        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
-    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
-    sanitized = sanitized.strip().rstrip(" .")
-
-    if normalize_leading_number:
-        match = re.match(r"^(\d+)(.*)", sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:
-                sanitized = str(int(number_str)) + rest_of_name
-            except ValueError:
-                if len(number_str) > 1 and number_str.startswith("0"):
-                    sanitized = number_str.lstrip("0") + rest_of_name
-                else:
-                    sanitized = number_str + rest_of_name
-
-    if not sanitized:
-        sanitized = fallback
-
-    if sanitized.startswith("."):
-        sanitized = f"{fallback}{sanitized}"
-
-    suffixes = "".join(Path(sanitized).suffixes)
-    base = sanitized[:-len(suffixes)] if suffixes else sanitized
-    if not base:
-        base = fallback
-        sanitized = f"{base}{suffixes}" if suffixes else base
-
-    windows_reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    }
-    if base.upper() in windows_reserved_names:
-        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
-
-    sanitized = sanitized.rstrip(" .")
-    return sanitized or fallback
+from common_utils import sanitize_filename
 
 # --- Constantes ---
 # Limite prático para caminhos no Windows para evitar problemas com funções padrão.

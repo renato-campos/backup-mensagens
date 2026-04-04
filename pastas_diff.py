@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Set, List
+from common_utils import is_ffs_aux_file
 
 # --- Constantes ---
 LOG_FOLDER_NAME = "ERROS"
@@ -103,7 +104,7 @@ class FolderComparer:
                 # Ignora a pasta de logs para não contaminar a comparação.
                 dirnames[:] = [d for d in dirnames if d.lower() != LOG_FOLDER_NAME.lower()]
                 for filename in filenames:
-                    if filename.lower() in {".ffs_db", ".ffs_lock"}: # Exclusões específicas
+                    if is_ffs_aux_file(filename): # Exclusões específicas
                         continue
                     
                     full_path_str = os.path.join(root, filename)

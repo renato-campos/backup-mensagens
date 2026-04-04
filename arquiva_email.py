@@ -6,55 +6,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
-
-def sanitize_filename(
-    filename: str,
-    fallback: str = "arquivo_renomeado",
-    remove_msg_prefix: bool = True,
-    normalize_leading_number: bool = True,
-) -> str:
-    sanitized = filename.strip()
-    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
-    if remove_msg_prefix:
-        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
-    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
-    sanitized = sanitized.strip().rstrip(" .")
-
-    if normalize_leading_number:
-        match = re.match(r"^(\d+)(.*)", sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:
-                sanitized = str(int(number_str)) + rest_of_name
-            except ValueError:
-                if len(number_str) > 1 and number_str.startswith("0"):
-                    sanitized = number_str.lstrip("0") + rest_of_name
-                else:
-                    sanitized = number_str + rest_of_name
-
-    if not sanitized:
-        sanitized = fallback
-
-    if sanitized.startswith("."):
-        sanitized = f"{fallback}{sanitized}"
-
-    suffixes = "".join(Path(sanitized).suffixes)
-    base = sanitized[:-len(suffixes)] if suffixes else sanitized
-    if not base:
-        base = fallback
-        sanitized = f"{base}{suffixes}" if suffixes else base
-
-    windows_reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    }
-    if base.upper() in windows_reserved_names:
-        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
-
-    sanitized = sanitized.rstrip(" .")
-    return sanitized or fallback
+from common_utils import (
+    extract_header_value_from_raw_eml,
+    is_ffs_aux_file,
+    sanitize_filename,
+)
 
 # --- Constantes ---
 # Limite prático para caminhos no Windows (MAX_PATH (260) - 1 para nulo)
@@ -132,7 +88,7 @@ class FileArchiver:
         for item_path in self.watch_folder.iterdir():
             if item_path.is_file():
                 # Ignora arquivos .ffs_db silenciosamente
-                if item_path.name.lower().endswith(".ffs_db") or item_path.name.lower().endswith(".ffs_lock"):
+                if is_ffs_aux_file(item_path.name):
                     continue
                 self.process_file(item_path)
 
@@ -179,8 +135,7 @@ class FileArchiver:
 
         date_str = msg.get("Date")
         if not date_str:
-            date_str = self._extract_header_value_from_raw_eml(
-                eml_path, "Date")
+            date_str = extract_header_value_from_raw_eml(eml_path, "Date")
         # A falha na análise da data agora usa a data atual, não impede a movimentação,
         # então não logamos mais como erro aqui.
         # Passa o path para logs internos se necessário
@@ -191,27 +146,6 @@ class FileArchiver:
         archive_folder = self.archive_root / year / year_month
 
         self.move_file_to_archive(eml_path, archive_folder)
-
-    def _extract_header_value_from_raw_eml(self, eml_path: Path, header_name: str) -> Optional[str]:
-        """
-        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
-        (ex.: BOM no meio dos headers).
-        """
-        encodings_to_try = ("utf-8", "latin-1")
-        header_prefix = f"{header_name.lower()}:"
-        for encoding in encodings_to_try:
-            try:
-                with eml_path.open('r', encoding=encoding, errors='ignore') as f:
-                    for line in f:
-                        stripped_line = line.strip("\r\n")
-                        if stripped_line == "":
-                            break
-                        normalized_line = stripped_line.lstrip("\ufeff")
-                        if normalized_line.lower().startswith(header_prefix):
-                            return normalized_line.split(":", 1)[1].strip()
-            except Exception:
-                continue
-        return None
 
     def _parse_date(self, date_str: Optional[str]) -> datetime:
         """Tenta analisar a string de data. Retorna datetime.now() em caso de falha."""

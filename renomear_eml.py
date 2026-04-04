@@ -10,56 +10,8 @@ import shutil
 import logging
 from pathlib import Path
 from typing import Optional
+from common_utils import extract_header_value_from_raw_eml, sanitize_filename
 FALLBACK_SANITIZED_FILENAME = "arquivo_renomeado"
-
-def sanitize_filename(
-    filename: str,
-    fallback: str = FALLBACK_SANITIZED_FILENAME,
-    remove_msg_prefix: bool = True,
-    normalize_leading_number: bool = True,
-) -> str:
-    sanitized = filename.strip()
-    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
-    if remove_msg_prefix:
-        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
-    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
-    sanitized = sanitized.strip().rstrip(" .")
-
-    if normalize_leading_number:
-        match = re.match(r"^(\d+)(.*)", sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:
-                sanitized = str(int(number_str)) + rest_of_name
-            except ValueError:
-                if len(number_str) > 1 and number_str.startswith("0"):
-                    sanitized = number_str.lstrip("0") + rest_of_name
-                else:
-                    sanitized = number_str + rest_of_name
-
-    if not sanitized:
-        sanitized = fallback
-
-    if sanitized.startswith("."):
-        sanitized = f"{fallback}{sanitized}"
-
-    suffixes = "".join(Path(sanitized).suffixes)
-    base = sanitized[:-len(suffixes)] if suffixes else sanitized
-    if not base:
-        base = fallback
-        sanitized = f"{base}{suffixes}" if suffixes else base
-
-    windows_reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    }
-    if base.upper() in windows_reserved_names:
-        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
-
-    sanitized = sanitized.rstrip(" .")
-    return sanitized or fallback
 
 # --- Constantes ---
 PROBLEMS_SUBFOLDER = "Problemas" # Nova pasta para erros de leitura
@@ -291,28 +243,6 @@ class EmlRenamer:
                 self.logger.warning(f"Valor de data/hora inválido ('{data_hora_line_str}') extraído do corpo: {ve}")
         return None
 
-    def _extract_header_value_from_raw_eml(self, eml_path: Path, header_name: str) -> Optional[str]:
-        """
-        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
-        (ex.: BOM no meio dos headers).
-        """
-        encodings_to_try = ("utf-8", "latin-1")
-        header_prefix = f"{header_name.lower()}:"
-
-        for encoding in encodings_to_try:
-            try:
-                with eml_path.open('r', encoding=encoding, errors='ignore') as f:
-                    for line in f:
-                        stripped_line = line.strip("\r\n")
-                        if stripped_line == "":
-                            break
-                        normalized_line = stripped_line.lstrip("\ufeff")
-                        if normalized_line.lower().startswith(header_prefix):
-                            return normalized_line.split(":", 1)[1].strip()
-            except Exception:
-                continue
-        return None
-
     def _get_formatted_date(self, msg: email.message.Message, date_header_string: Optional[str], fallback_file_path: Optional[Path] = None) -> str:
         """
         Analisa o cabeçalho Date, tenta extrair do corpo do e-mail, ou usa data de modificação
@@ -477,18 +407,18 @@ class EmlRenamer:
 
             date_str = msg.get("Date")
             if not date_str:
-                date_str = self._extract_header_value_from_raw_eml(
+                date_str = extract_header_value_from_raw_eml(
                     original_path, "Date")
 
             subject_header = msg.get("Subject")
             if not subject_header:
-                subject_header = self._extract_header_value_from_raw_eml(
+                subject_header = extract_header_value_from_raw_eml(
                     original_path, "Subject")
             subject_str = self._decode_email_header(subject_header)
 
             from_header = msg.get("From")
             if not from_header:
-                from_header = self._extract_header_value_from_raw_eml(
+                from_header = extract_header_value_from_raw_eml(
                     original_path, "From")
             from_str = self._decode_email_header(from_header)
             # message_id_str = msg.get("Message-ID") # Não é mais usado no nome do arquivo
