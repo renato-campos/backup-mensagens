@@ -1,3 +1,4 @@
+import os
 import shutil
 import logging
 import re
@@ -6,6 +7,54 @@ from pathlib import Path
 from typing import List, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox
+def sanitize_filename(
+    filename: str,
+    fallback: str = "arquivo_renomeado",
+    remove_msg_prefix: bool = True,
+    normalize_leading_number: bool = True,
+) -> str:
+    sanitized = filename.strip()
+    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
+    if remove_msg_prefix:
+        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
+    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
+    sanitized = sanitized.strip().rstrip(" .")
+
+    if normalize_leading_number:
+        match = re.match(r"^(\d+)(.*)", sanitized)
+        if match:
+            number_str, rest_of_name = match.groups()
+            try:
+                sanitized = str(int(number_str)) + rest_of_name
+            except ValueError:
+                if len(number_str) > 1 and number_str.startswith("0"):
+                    sanitized = number_str.lstrip("0") + rest_of_name
+                else:
+                    sanitized = number_str + rest_of_name
+
+    if not sanitized:
+        sanitized = fallback
+
+    if sanitized.startswith("."):
+        sanitized = f"{fallback}{sanitized}"
+
+    suffixes = "".join(Path(sanitized).suffixes)
+    base = sanitized[:-len(suffixes)] if suffixes else sanitized
+    if not base:
+        base = fallback
+        sanitized = f"{base}{suffixes}" if suffixes else base
+
+    windows_reserved_names = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }
+    if base.upper() in windows_reserved_names:
+        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
+
+    sanitized = sanitized.rstrip(" .")
+    return sanitized or fallback
 
 # --- Constantes ---
 # Limite prático para caminhos no Windows para evitar problemas com funções padrão.
@@ -246,28 +295,11 @@ class FileMover:
         Remove ou substitui caracteres inválidos, o prefixo 'msg ',
         espaços extras e normaliza números no início do nome.
         """
-        sanitized = re.sub(r'^msg\s+', '', filename, flags=re.IGNORECASE)
-        sanitized = re.sub(r'[<>:"/\\|?*]', '_', sanitized)
-        sanitized = re.sub(r'[\x00-\x1f]', '', sanitized)
-        sanitized = sanitized.strip()
-
-        match = re.match(r'^(\d+)(.*)', sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:  # Adicionado try-except para números muito grandes que não cabem em int
-                number = int(number_str)
-                sanitized = str(number) + rest_of_name
-            except ValueError:
-                # Se o número for muito grande, mantenha como string, mas remova zeros à esquerda se houver mais de um dígito e começar com zero
-                if len(number_str) > 1 and number_str.startswith('0'):
-                    sanitized = number_str.lstrip('0') + rest_of_name
-                else:  # Mantém o número original se for um único '0' ou não começar com '0'
-                    sanitized = number_str + rest_of_name
-
-        if not sanitized:
+        sanitized = sanitize_filename(
+            filename, fallback=FALLBACK_SANITIZED_FILENAME)
+        if sanitized == FALLBACK_SANITIZED_FILENAME:
             self.logger.warning(
                 f"Nome do arquivo '{filename}' resultou em vazio após sanitização. Usando fallback.")
-            sanitized = FALLBACK_SANITIZED_FILENAME
         return sanitized
 
     def _truncate_filename(self, target_folder: Path, filename: str, max_full_path_len: int) -> str:
@@ -363,12 +395,6 @@ def main() -> None:
     messagebox.showinfo("Processo Iniciado", info_message,
                         parent=root_for_dialogs)
     root_for_dialogs.destroy()  # Destruir a root temporária dos dialogs iniciais
-
-    # Precisamos importar os aqui porque FileMover ainda usa os.walk internamente
-    # Se FileMover for totalmente migrado para não usar os.walk, esta importação pode ser removida.
-    # TODO: Avaliar a substituição completa de os.walk em FileMover se Path.glob/rglob for suficiente.
-    global os
-    import os
 
     mover = FileMover(root_folder_str)
     mover.process_files_in_root()

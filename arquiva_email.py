@@ -2,9 +2,59 @@ import shutil
 import email
 import logging
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
+
+def sanitize_filename(
+    filename: str,
+    fallback: str = "arquivo_renomeado",
+    remove_msg_prefix: bool = True,
+    normalize_leading_number: bool = True,
+) -> str:
+    sanitized = filename.strip()
+    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
+    if remove_msg_prefix:
+        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
+    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
+    sanitized = sanitized.strip().rstrip(" .")
+
+    if normalize_leading_number:
+        match = re.match(r"^(\d+)(.*)", sanitized)
+        if match:
+            number_str, rest_of_name = match.groups()
+            try:
+                sanitized = str(int(number_str)) + rest_of_name
+            except ValueError:
+                if len(number_str) > 1 and number_str.startswith("0"):
+                    sanitized = number_str.lstrip("0") + rest_of_name
+                else:
+                    sanitized = number_str + rest_of_name
+
+    if not sanitized:
+        sanitized = fallback
+
+    if sanitized.startswith("."):
+        sanitized = f"{fallback}{sanitized}"
+
+    suffixes = "".join(Path(sanitized).suffixes)
+    base = sanitized[:-len(suffixes)] if suffixes else sanitized
+    if not base:
+        base = fallback
+        sanitized = f"{base}{suffixes}" if suffixes else base
+
+    windows_reserved_names = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }
+    if base.upper() in windows_reserved_names:
+        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
+
+    sanitized = sanitized.rstrip(" .")
+    return sanitized or fallback
 
 # --- Constantes ---
 # Limite prático para caminhos no Windows (MAX_PATH (260) - 1 para nulo)
@@ -15,12 +65,6 @@ FALLBACK_SANITIZED_FILENAME = "arquivo_renomeado"
 # Máximo de tentativas para resolver nomes duplicados
 MAX_DUPLICATE_RESOLUTION_ATTEMPTS = 10
 LOG_FILENAME_PREFIX = "archive_failures_"
-
-# Pasta de monitoramento. Ajuste conforme necessário ou considere torná-la um parâmetro.
-# Original do Desktop de mensagens
-WATCH_FOLDER_PATH_STR = r"C:\backup_mensagens"
-# Pasta teste
-# WATCH_FOLDER_PATH_STR = r"C:\Users\renat\OneDrive\Área de Trabalho\Mensagens"
 # --- Fim Constantes ---
 
 
@@ -134,10 +178,13 @@ class FileArchiver:
             return  # Impede a movimentação
 
         date_str = msg.get("Date")
+        if not date_str:
+            date_str = self._extract_header_value_from_raw_eml(
+                eml_path, "Date")
         # A falha na análise da data agora usa a data atual, não impede a movimentação,
         # então não logamos mais como erro aqui.
         # Passa o path para logs internos se necessário
-        date_obj = self._parse_date(date_str, eml_path)
+        date_obj = self._parse_date(date_str)
 
         year = date_obj.strftime("%Y")
         year_month = date_obj.strftime("%Y-%m")
@@ -145,7 +192,28 @@ class FileArchiver:
 
         self.move_file_to_archive(eml_path, archive_folder)
 
-    def _parse_date(self, date_str: Optional[str], file_path_for_log: Path) -> datetime:
+    def _extract_header_value_from_raw_eml(self, eml_path: Path, header_name: str) -> Optional[str]:
+        """
+        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
+        (ex.: BOM no meio dos headers).
+        """
+        encodings_to_try = ("utf-8", "latin-1")
+        header_prefix = f"{header_name.lower()}:"
+        for encoding in encodings_to_try:
+            try:
+                with eml_path.open('r', encoding=encoding, errors='ignore') as f:
+                    for line in f:
+                        stripped_line = line.strip("\r\n")
+                        if stripped_line == "":
+                            break
+                        normalized_line = stripped_line.lstrip("\ufeff")
+                        if normalized_line.lower().startswith(header_prefix):
+                            return normalized_line.split(":", 1)[1].strip()
+            except Exception:
+                continue
+        return None
+
+    def _parse_date(self, date_str: Optional[str]) -> datetime:
         """Tenta analisar a string de data. Retorna datetime.now() em caso de falha."""
         if not date_str:
             # Não loga mais aviso/erro, apenas retorna data atual
@@ -202,27 +270,11 @@ class FileArchiver:
         Remove ou substitui caracteres inválidos, o prefixo 'msg ',
         espaços extras e normaliza números no início do nome.
         """
-        sanitized = re.sub(r'^msg\s+', '', filename, flags=re.IGNORECASE)
-        sanitized = re.sub(r'[<>:"/\\|?*]', '_', sanitized)
-        sanitized = re.sub(r'[\x00-\x1f]', '', sanitized)
-        sanitized = sanitized.strip()
-
-        match = re.match(r'^(\d+)(.*)', sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            try:
-                number = int(number_str)
-                sanitized = str(number) + rest_of_name
-            except ValueError:  # Para números muito grandes
-                if len(number_str) > 1 and number_str.startswith('0'):
-                    sanitized = number_str.lstrip('0') + rest_of_name
-                else:
-                    sanitized = number_str + rest_of_name
-
-        if not sanitized:
+        sanitized = sanitize_filename(
+            filename, fallback=FALLBACK_SANITIZED_FILENAME)
+        if sanitized == FALLBACK_SANITIZED_FILENAME:
             self.logger.error(  # Erro, pois um nome de arquivo vazio é problemático
                 f"Nome do arquivo '{filename}' resultou em vazio após sanitização. Usando fallback '{FALLBACK_SANITIZED_FILENAME}'.")
-            sanitized = FALLBACK_SANITIZED_FILENAME
         return sanitized
 
     def _truncate_filename(self, target_folder: Path, filename: str, max_full_path_len: int) -> str:
@@ -324,28 +376,11 @@ class FileArchiver:
 
 def main() -> None:
     """Função principal para configurar e executar o arquivador de arquivos."""
-    watch_folder = Path(WATCH_FOLDER_PATH_STR)
-    archive_root = watch_folder  # Arquiva dentro da pasta de monitoramento, em subpastas
+    watch_folder = _resolve_watch_folder_from_args_or_dialog()
+    if not watch_folder:
+        return
 
-    # Cria a pasta de monitoramento se não existir (para testes)
-    if not watch_folder.exists():
-        try:
-            watch_folder.mkdir(parents=True, exist_ok=True)
-            print(f"Pasta de monitoramento {watch_folder} criada para teste.")
-            # Crie alguns arquivos .eml ou outros para teste dentro dela
-            with (watch_folder / "msg teste1.eml").open("w", encoding='utf-8') as f:
-                f.write(
-                    "Date: Mon, 1 Jan 2024 10:00:00 +0000\nSubject: Teste\n\nCorpo do email.")
-            with (watch_folder / "MSG Arquivo com espaço.txt").open("w", encoding='utf-8') as f:
-                f.write("Conteúdo.")
-            long_name = "msg " + "a" * 240 + ".txt"
-            with (watch_folder / long_name).open("w", encoding='utf-8') as f:
-                f.write("Longo.")
-            with (watch_folder / "arquivo sem prefixo.txt").open("w", encoding='utf-8') as f:
-                f.write("Normal.")
-        except OSError as e:
-            print(f"Erro ao criar pasta de monitoramento {watch_folder}: {e}")
-            return  # Não continuar se a pasta de teste não puder ser criada
+    archive_root = watch_folder  # Arquiva dentro da pasta de monitoramento, em subpastas
 
     # Passa strings como esperado pelo __init__
     archiver = FileArchiver(str(watch_folder), str(archive_root))
@@ -445,6 +480,58 @@ def show_auto_close_message(message: str, timeout: int) -> None:
 
     # Iniciar loop principal
     root.mainloop()
+
+
+def _resolve_watch_folder_from_args_or_dialog() -> Optional[Path]:
+    """
+    Define a pasta de monitoramento:
+    1) Usa o primeiro argumento de linha de comando, se fornecido.
+    2) Caso contrário, solicita via caixa de mensagem + seletor de pasta.
+    """
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        watch_folder = Path(sys.argv[1]).expanduser()
+        if watch_folder.exists() and watch_folder.is_dir():
+            return watch_folder.resolve()
+        _show_error_dialog(
+            "Pasta inválida",
+            f"O caminho informado não é uma pasta válida:\n{watch_folder}",
+        )
+        return None
+
+    import tkinter as tk_module
+    from tkinter import filedialog, messagebox
+
+    root = tk_module.Tk()
+    root.withdraw()
+    messagebox.showinfo(
+        "Seleção de Pasta",
+        "Nenhum caminho foi informado por argumento.\nSelecione a pasta a ser monitorada.",
+        parent=root,
+    )
+    folder_selected = filedialog.askdirectory(
+        title="Selecione a Pasta a ser Monitorada",
+        parent=root,
+    )
+    if not folder_selected:
+        messagebox.showwarning(
+            "Operação Cancelada",
+            "Nenhuma pasta foi selecionada. Encerrando.",
+            parent=root,
+        )
+        root.destroy()
+        return None
+    root.destroy()
+    return Path(folder_selected).resolve()
+
+
+def _show_error_dialog(title: str, message: str) -> None:
+    import tkinter as tk_module
+    from tkinter import messagebox
+
+    root = tk_module.Tk()
+    root.withdraw()
+    messagebox.showerror(title, message, parent=root)
+    root.destroy()
 
 
 if __name__ == "__main__":

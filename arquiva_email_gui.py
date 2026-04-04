@@ -6,10 +6,60 @@ import re
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from pathlib import Path
+def sanitize_filename(
+    filename: str,
+    fallback: str = "arquivo_renomeado",
+    remove_msg_prefix: bool = True,
+    normalize_leading_number: bool = True,
+) -> str:
+    sanitized = filename.strip()
+    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
+    if remove_msg_prefix:
+        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
+    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
+    sanitized = sanitized.strip().rstrip(" .")
+
+    if normalize_leading_number:
+        match = re.match(r"^(\d+)(.*)", sanitized)
+        if match:
+            number_str, rest_of_name = match.groups()
+            try:
+                sanitized = str(int(number_str)) + rest_of_name
+            except ValueError:
+                if len(number_str) > 1 and number_str.startswith("0"):
+                    sanitized = number_str.lstrip("0") + rest_of_name
+                else:
+                    sanitized = number_str + rest_of_name
+
+    if not sanitized:
+        sanitized = fallback
+
+    if sanitized.startswith("."):
+        sanitized = f"{fallback}{sanitized}"
+
+    suffixes = "".join(Path(sanitized).suffixes)
+    base = sanitized[:-len(suffixes)] if suffixes else sanitized
+    if not base:
+        base = fallback
+        sanitized = f"{base}{suffixes}" if suffixes else base
+
+    windows_reserved_names = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }
+    if base.upper() in windows_reserved_names:
+        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
+
+    sanitized = sanitized.rstrip(" .")
+    return sanitized or fallback
 
 # Definir constantes do arquiva_email.py (ou arquiva_raiz.py)
 MAX_PATH_LENGTH = 259
 SAFE_FILENAME_MARGIN = 10
+FALLBACK_SANITIZED_FILENAME = "arquivo_renomeado"
 
 
 class FileArchiver:
@@ -20,7 +70,6 @@ class FileArchiver:
         self.setup_logger()
         self.processed_files_count = 0
         self.error_count = 0
-        self.created_folders = set()
 
     def setup_logger(self):
         """Configura o logger para registrar apenas erros."""
@@ -124,6 +173,9 @@ class FileArchiver:
             return
 
         date_str = msg.get("Date")
+        if not date_str:
+            date_str = self._extract_header_value_from_raw_eml(
+                eml_path, "Date")
         # _parse_date lida com data inválida internamente
         date_obj = self._parse_date(date_str, eml_path)
 
@@ -133,6 +185,28 @@ class FileArchiver:
         archive_folder = os.path.join(archive_year_folder, year_month)
 
         self.move_file_to_archive(eml_path, archive_folder)
+
+    def _extract_header_value_from_raw_eml(self, eml_path, header_name):
+        """
+        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
+        (ex.: BOM no meio dos headers).
+        """
+        encodings_to_try = ("utf-8", "latin-1")
+        header_prefix = f"{header_name.lower()}:"
+
+        for encoding in encodings_to_try:
+            try:
+                with open(eml_path, 'r', encoding=encoding, errors='ignore') as f:
+                    for line in f:
+                        stripped_line = line.strip("\r\n")
+                        if stripped_line == "":
+                            break
+                        normalized_line = stripped_line.lstrip("\ufeff")
+                        if normalized_line.lower().startswith(header_prefix):
+                            return normalized_line.split(":", 1)[1].strip()
+            except Exception:
+                continue
+        return None
 
     def _parse_date(self, date_str, file_path_for_log):
         """Tenta analisar a string de data. Retorna datetime.now() em caso de falha."""
@@ -214,37 +288,7 @@ class FileArchiver:
 
     def _sanitize_filename(self, filename):
         """Remove ou substitui caracteres inválidos e o prefixo 'msg '."""
-        # 1. Remove o prefixo "msg " (case-insensitive) do início
-        #    O padrão ^ indica o início da string
-        #    re.IGNORECASE faz a busca ignorar maiúsculas/minúsculas
-        # Adicionado \s+ para remover o espaço seguinte também
-        sanitized = re.sub(r'^msg\s+', '', filename, flags=re.IGNORECASE)
-
-        # 2. Remove caracteres inválidos: < > : " / \ | ? *
-        sanitized = re.sub(r'[<>:"/\\|?*]', '_', sanitized)
-
-        # 3. Remove caracteres de controle (ASCII 0-31)
-        sanitized = re.sub(r'[\x00-\x1f]', '', sanitized)
-
-        # 4. Remove espaços em branco no início ou fim (após remover prefixo e inválidos)
-        sanitized = sanitized.strip()
-
-        # 5. Normaliza números no início do nome para remover zeros à esquerda
-        # Procura por um número no início do nome do arquivo
-        match = re.match(r'^(\d+)(.*)', sanitized)
-        if match:
-            number_str, rest_of_name = match.groups()
-            # Converte para inteiro para remover zeros à esquerda
-            number = int(number_str)
-            # Reconstrói o nome com o número sem zeros à esquerda
-            sanitized = str(number) + rest_of_name
-
-        # 6. Garante que o nome não seja vazio após a limpeza
-        if not sanitized:
-            # Se o nome original era apenas "msg " ou algo similar que foi removido
-            sanitized = "arquivo_renomeado"  # Ou gerar um nome único com timestamp
-        # Não loga mais a sanitização
-        return sanitized
+        return sanitize_filename(filename, fallback=FALLBACK_SANITIZED_FILENAME)
 
     def _truncate_filename(self, folder_path, filename, max_len):
         """Trunca o nome do arquivo se o caminho completo exceder max_len."""
@@ -285,19 +329,11 @@ class FileArchiver:
 
     def move_file_to_archive(self, file_path, archive_folder):
         """Move o arquivo para a pasta de destino, tratando sanitização, truncamento e duplicados."""
-        archive_year_folder = os.path.dirname(archive_folder)
         try:
             # Cria pastas se não existirem (makedirs cria pais também)
             if not os.path.exists(archive_folder):
                 # exist_ok=True evita erro se existir
                 os.makedirs(archive_folder, exist_ok=True)
-                # Removido print de criação de pasta
-                # if archive_folder not in self.created_folders:
-                #      print(f"Pasta {archive_folder} criada.")
-                #      self.created_folders.add(archive_folder)
-                #      # Adiciona pasta pai também para evitar print duplo
-                #      if archive_year_folder not in self.created_folders and archive_year_folder != self.archive_root:
-                #           self.created_folders.add(archive_year_folder)
 
         except OSError as e:
             self.logger.error(

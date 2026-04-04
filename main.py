@@ -21,8 +21,6 @@ def launch_executable(executable_name: str):
     # Assumimos que os outros .exe estão no mesmo diretório.
     executable_path = os.path.join(SCRIPT_DIR, executable_name)
     
-    print(f"DEBUG: Tentando lançar executável: {executable_path}") # Para depuração
-
     if not os.path.exists(executable_path):
         messagebox.showerror(
             "Erro de Execução", f"Executável não encontrado:\n{executable_path}")
@@ -45,8 +43,6 @@ def launch_executable(executable_name: str):
 def open_help_pdf(pdf_filename: str):
     """Abre um arquivo PDF de ajuda usando o visualizador padrão do sistema."""
     pdf_path = os.path.join(HELP_DIR, pdf_filename)
-    print(f"DEBUG: Tentando abrir ajuda: {pdf_path}") # Para depuração
-    print(f"DEBUG: PDF existe? {os.path.exists(pdf_path)}") # Para depuração
 
     if not os.path.exists(pdf_path):
         messagebox.showerror(
@@ -157,5 +153,5 @@ class MainApp:
 if __name__ == "__main__":
     # A lógica de despacho foi removida, main.py sempre inicia a GUI.
     main_root = tk.Tk()
-    app = MainApp(main_root)
+    MainApp(main_root)
     main_root.mainloop()

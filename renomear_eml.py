@@ -9,7 +9,57 @@ import re
 import shutil
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
+FALLBACK_SANITIZED_FILENAME = "arquivo_renomeado"
+
+def sanitize_filename(
+    filename: str,
+    fallback: str = FALLBACK_SANITIZED_FILENAME,
+    remove_msg_prefix: bool = True,
+    normalize_leading_number: bool = True,
+) -> str:
+    sanitized = filename.strip()
+    sanitized = sanitized.encode("cp1252", errors="ignore").decode("cp1252")
+    if remove_msg_prefix:
+        sanitized = re.sub(r"^msg\s+", "", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", sanitized)
+    sanitized = re.sub(r"[\x00-\x1f]", "", sanitized)
+    sanitized = sanitized.strip().rstrip(" .")
+
+    if normalize_leading_number:
+        match = re.match(r"^(\d+)(.*)", sanitized)
+        if match:
+            number_str, rest_of_name = match.groups()
+            try:
+                sanitized = str(int(number_str)) + rest_of_name
+            except ValueError:
+                if len(number_str) > 1 and number_str.startswith("0"):
+                    sanitized = number_str.lstrip("0") + rest_of_name
+                else:
+                    sanitized = number_str + rest_of_name
+
+    if not sanitized:
+        sanitized = fallback
+
+    if sanitized.startswith("."):
+        sanitized = f"{fallback}{sanitized}"
+
+    suffixes = "".join(Path(sanitized).suffixes)
+    base = sanitized[:-len(suffixes)] if suffixes else sanitized
+    if not base:
+        base = fallback
+        sanitized = f"{base}{suffixes}" if suffixes else base
+
+    windows_reserved_names = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }
+    if base.upper() in windows_reserved_names:
+        sanitized = f"{base}_{suffixes}" if suffixes else f"{base}_"
+
+    sanitized = sanitized.rstrip(" .")
+    return sanitized or fallback
 
 # --- Constantes ---
 PROBLEMS_SUBFOLDER = "Problemas" # Nova pasta para erros de leitura
@@ -24,6 +74,8 @@ FALLBACK_PART_NAME = "Desconhecido"
 MAX_ALLOWED_FILENAME_BASE_LEN = 200 # Limite para o nome base do arquivo (sem extensão)
 FALLBACK_INVALID_PART_NAME = "Invalido"
 FALLBACK_HEADER_DECODE_ERROR = "Cabecalho_Indecifravel"
+EFFECTIVE_MAX_PATH = 259
+SAFE_PATH_MARGIN = 10
 # Para sufixos de duplicatas: "" (sem sufixo), "a"-"z" (26), "aa"-"zz" (26*26=676). Total = 1+26+676 = 703 tentativas.
 MAX_SUFFIX_ATTEMPTS = 1 + 26 + (26 * 26)
 # --- Fim Constantes ---
@@ -72,11 +124,54 @@ class EmlRenamer:
             logger.addHandler(logging.NullHandler())
         return logger
 
+    def _truncate_filename(self, target_folder: Path, filename: str, max_full_path_len: int) -> str:
+        """
+        Trunca o nome do arquivo (preservando extensão) para não exceder
+        o limite de caminho completo.
+        """
+        filename_path = Path(filename)
+        base = filename_path.stem
+        ext = filename_path.suffix
+        potential_full_path = target_folder / filename
+
+        if len(str(potential_full_path)) <= max_full_path_len:
+            return filename
+
+        len_of_folder_path_str = len(str(target_folder))
+        len_of_separator = 1
+        len_of_extension = len(ext)
+        available_len_for_base = max_full_path_len - (
+            len_of_folder_path_str + len_of_separator + len_of_extension
+        )
+
+        if available_len_for_base <= 0:
+            fallback_name = sanitize_filename(
+                f"{FALLBACK_SANITIZED_FILENAME}{ext}",
+                fallback=FALLBACK_SANITIZED_FILENAME,
+                remove_msg_prefix=False,
+                normalize_leading_number=False,
+            )
+            return fallback_name
+
+        if len(base) > available_len_for_base:
+            base = base[:available_len_for_base]
+
+        truncated = f"{base}{ext}"
+        return truncated or sanitize_filename(
+            f"{FALLBACK_SANITIZED_FILENAME}{ext}",
+            fallback=FALLBACK_SANITIZED_FILENAME,
+            remove_msg_prefix=False,
+            normalize_leading_number=False,
+        )
+
     def _sanitize_filename_part(self, text: Optional[str], max_len: int) -> str:
         """Limpa uma string para ser usada em nomes de arquivo."""
         if not text:
             return FALLBACK_PART_NAME
-        
+
+        # Mantém apenas caracteres representáveis em Windows-1252.
+        text = text.encode("cp1252", errors="ignore").decode("cp1252")
+
         sanitized = re.sub(INVALID_FILENAME_CHARS, '_', text)
         sanitized = re.sub(r'[\s_.-]+', '_', sanitized) # Múltiplos espaços/underscores/pontos/hífens para um único underscore
         sanitized = sanitized.strip('_') # Remove underscores no início/fim
@@ -196,6 +291,28 @@ class EmlRenamer:
                 self.logger.warning(f"Valor de data/hora inválido ('{data_hora_line_str}') extraído do corpo: {ve}")
         return None
 
+    def _extract_header_value_from_raw_eml(self, eml_path: Path, header_name: str) -> Optional[str]:
+        """
+        Fallback para recuperar cabeçalhos quando o parser de e-mail falha
+        (ex.: BOM no meio dos headers).
+        """
+        encodings_to_try = ("utf-8", "latin-1")
+        header_prefix = f"{header_name.lower()}:"
+
+        for encoding in encodings_to_try:
+            try:
+                with eml_path.open('r', encoding=encoding, errors='ignore') as f:
+                    for line in f:
+                        stripped_line = line.strip("\r\n")
+                        if stripped_line == "":
+                            break
+                        normalized_line = stripped_line.lstrip("\ufeff")
+                        if normalized_line.lower().startswith(header_prefix):
+                            return normalized_line.split(":", 1)[1].strip()
+            except Exception:
+                continue
+        return None
+
     def _get_formatted_date(self, msg: email.message.Message, date_header_string: Optional[str], fallback_file_path: Optional[Path] = None) -> str:
         """
         Analisa o cabeçalho Date, tenta extrair do corpo do e-mail, ou usa data de modificação
@@ -274,14 +391,32 @@ class EmlRenamer:
             fallback_date_obj = datetime.fromtimestamp(mod_time)
             formatted_fallback_date = fallback_date_obj.strftime("%Y %m %d %H%M") # Ajustado para novo formato
 
-            original_base_sanitized = self._sanitize_filename_part(original_path.stem, DEFAULT_MAX_PART_LEN)
+            original_base_sanitized = self._sanitize_filename_part(
+                original_path.stem, DEFAULT_MAX_PART_LEN)
             problem_base_name = f"{formatted_fallback_date} - ERRO_LEITURA - {original_base_sanitized}"
-            
-            problem_target_path = self.problems_path / f"{problem_base_name}{original_path.suffix}"
+
+            max_allowed_path = EFFECTIVE_MAX_PATH - SAFE_PATH_MARGIN
+            sanitized_problem_name = sanitize_filename(
+                f"{problem_base_name}{original_path.suffix}",
+                fallback=f"{FALLBACK_SANITIZED_FILENAME}{original_path.suffix}",
+                remove_msg_prefix=False,
+                normalize_leading_number=False,
+            )
+            final_problem_name = self._truncate_filename(
+                self.problems_path, sanitized_problem_name, max_allowed_path)
+            problem_target_path = self.problems_path / final_problem_name
             counter = 1
             while problem_target_path.exists():
                 self.logger.warning(f"Nome '{problem_target_path.name}' também existe em '{PROBLEMS_SUBFOLDER}'. Tentando sufixo.")
-                problem_target_path = self.problems_path / f"{problem_base_name}_{counter}{original_path.suffix}"
+                with_counter = sanitize_filename(
+                    f"{problem_base_name}_{counter}{original_path.suffix}",
+                    fallback=f"{FALLBACK_SANITIZED_FILENAME}{original_path.suffix}",
+                    remove_msg_prefix=False,
+                    normalize_leading_number=False,
+                )
+                final_with_counter = self._truncate_filename(
+                    self.problems_path, with_counter, max_allowed_path)
+                problem_target_path = self.problems_path / final_with_counter
                 counter += 1
                 if counter > 100:
                     self.logger.error(f"Muitas tentativas de sufixo para '{original_path.name}' em {PROBLEMS_SUBFOLDER}. Abortando movimentação.")
@@ -341,8 +476,21 @@ class EmlRenamer:
                 raise ValueError("Não foi possível interpretar o arquivo EML após tentativas de leitura.")
 
             date_str = msg.get("Date")
-            subject_str = self._decode_email_header(msg.get("Subject"))
-            from_str = self._decode_email_header(msg.get("From"))
+            if not date_str:
+                date_str = self._extract_header_value_from_raw_eml(
+                    original_path, "Date")
+
+            subject_header = msg.get("Subject")
+            if not subject_header:
+                subject_header = self._extract_header_value_from_raw_eml(
+                    original_path, "Subject")
+            subject_str = self._decode_email_header(subject_header)
+
+            from_header = msg.get("From")
+            if not from_header:
+                from_header = self._extract_header_value_from_raw_eml(
+                    original_path, "From")
+            from_str = self._decode_email_header(from_header)
             # message_id_str = msg.get("Message-ID") # Não é mais usado no nome do arquivo
 
             formatted_date = self._get_formatted_date(msg, date_str, fallback_file_path=original_path)
@@ -352,6 +500,7 @@ class EmlRenamer:
             # sanitized_message_id não é mais necessário para o nome do arquivo
 
             current_attempt_number = 0
+            max_allowed_path = EFFECTIVE_MAX_PATH - SAFE_PATH_MARGIN
             while True:
                 if current_attempt_number >= MAX_SUFFIX_ATTEMPTS:
                     self.logger.error(f"Excedido o número máximo de tentativas de sufixo ({MAX_SUFFIX_ATTEMPTS-1}, até 'zz') para '{original_path.name}'. Movendo para '{PROBLEMS_SUBFOLDER}'.")
@@ -369,7 +518,14 @@ class EmlRenamer:
                     base_name_candidate = base_name_candidate[:MAX_ALLOWED_FILENAME_BASE_LEN]
                     self.logger.warning(f"Nome base truncado de '{original_candidate_for_log}' para '{base_name_candidate}' para o arquivo '{original_path.name}' devido ao limite de {MAX_ALLOWED_FILENAME_BASE_LEN} caracteres.")
 
-                new_filename_with_ext = f"{base_name_candidate}{original_path.suffix}"
+                sanitized_filename = sanitize_filename(
+                    f"{base_name_candidate}{original_path.suffix}",
+                    fallback=f"{FALLBACK_SANITIZED_FILENAME}{original_path.suffix}",
+                    remove_msg_prefix=False,
+                    normalize_leading_number=False,
+                )
+                new_filename_with_ext = self._truncate_filename(
+                    self.base_folder, sanitized_filename, max_allowed_path)
                 potential_target_path = self.base_folder / new_filename_with_ext
 
                 if not potential_target_path.exists():

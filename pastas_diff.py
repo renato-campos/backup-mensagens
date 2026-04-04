@@ -80,9 +80,6 @@ class FolderComparer:
             return False
         self.folder1 = Path(folder1_str)
 
-        # Configura o logging de arquivo agora que folder1 é conhecido
-        self._configure_file_logging()
-
         folder2_str = filedialog.askdirectory(title="Selecione a Segunda Pasta")
         if not folder2_str:
             messagebox.showinfo("Operação Cancelada", "Seleção da segunda pasta cancelada.")
@@ -102,9 +99,11 @@ class FolderComparer:
 
         try:
             # os.walk é mantido pela sua robustez e conveniência com os.path.relpath
-            for root, _, filenames in os.walk(str(folder_path)):
+            for root, dirnames, filenames in os.walk(str(folder_path)):
+                # Ignora a pasta de logs para não contaminar a comparação.
+                dirnames[:] = [d for d in dirnames if d.lower() != LOG_FOLDER_NAME.lower()]
                 for filename in filenames:
-                    if filename.lower() == ".ffs_db": # Exclusão específica
+                    if filename.lower() in {".ffs_db", ".ffs_lock"}: # Exclusões específicas
                         continue
                     
                     full_path_str = os.path.join(root, filename)
@@ -216,7 +215,9 @@ class FolderComparer:
             return
 
         report_content = self.compare_folders()
-        
+        # Só cria pasta/arquivo de log após a comparação para não influenciar os resultados.
+        self._configure_file_logging()
+
         if report_content.startswith("ERRO NA COMPARAÇÃO:"):
             messagebox.showerror("Erro na Comparação", report_content)
             if self.log_file_path:

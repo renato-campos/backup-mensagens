@@ -1,15 +1,19 @@
 import re
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 from typing import Optional, Tuple, List, Set
 import logging
 from datetime import datetime
 import markdown  # Necessário para ReportCombiner
+import webbrowser  # Para abrir o relatório no navegador
 
 # --- Constantes ---
 ICON_PATH = 'imagens/email.ico'
 REPORT_FILENAME_TEMPLATE = "relatorio_verificacao_{}.txt"
+
+# Lista para rastrear relatórios criados na sessão
+relatorios_criados: List[Path] = []
 
 # --- Constantes para ReportCombiner ---
 LOG_FOLDER_NAME = "LOGS_UNIFICADOR"
@@ -31,6 +35,48 @@ def selecionar_pasta() -> None:
     if pasta_selecionada:
         entry_pasta.delete(0, tk.END)
         entry_pasta.insert(0, pasta_selecionada)
+        
+        # Tentar prever os valores inicial e final baseado nos arquivos da pasta
+        pasta_path = Path(pasta_selecionada)
+        if pasta_path.is_dir():
+            try:
+                # Escanear arquivos e extrair números
+                numeros_encontrados = set()
+                for item_path in pasta_path.iterdir():
+                    if item_path.is_file():
+                        numero = _extrair_numero_inicial(item_path.name)
+                        if numero is not None:
+                            numeros_encontrados.add(numero)
+                
+                if numeros_encontrados:
+                    min_num = min(numeros_encontrados)
+                    max_num = max(numeros_encontrados)
+                    
+                    # Preencher os campos com os valores previstos
+                    entry_inicio.delete(0, tk.END)
+                    entry_inicio.insert(0, str(min_num))
+                    entry_fim.delete(0, tk.END)
+                    entry_fim.insert(0, str(max_num))
+                    
+                    # Avisar o usuário para conferir os valores
+                    messagebox.showinfo(
+                        "Valores Previstos",
+                        f"Os campos foram preenchidos automaticamente com base nos arquivos encontrados:\n\n"
+                        f"Número Inicial: {min_num}\n"
+                        f"Número Final: {max_num}\n\n"
+                        f"Por favor, confira se estes valores estão corretos antes de prosseguir."
+                    )
+                    
+                    print(f"INFO: Valores previstos - Inicial: {min_num}, Final: {max_num}")
+                else:
+                    messagebox.showinfo(
+                        "Nenhum Número Encontrado",
+                        "Nenhum arquivo com número no início foi encontrado na pasta selecionada.\n\n"
+                        "Por favor, insira manualmente os valores inicial e final."
+                    )
+                    print("INFO: Nenhum arquivo com número encontrado na pasta selecionada.")
+            except Exception as e:
+                print(f"AVISO: Não foi possível escanear a pasta para prever valores: {e}")
 
 # --- Classe ReportCombiner (integrada de unificador_de_relatorio.py) ---
 
@@ -353,14 +399,33 @@ def _gerar_conteudo_relatorio(
 
 
 def _salvar_relatorio(pasta_base: Path, nome_pasta_analisada: str, conteudo_relatorio: str) -> Optional[Path]:
-    """Salva o relatório em um arquivo .txt na pasta analisada."""
+    """Salva o relatório em um arquivo .html na pasta analisada e abre no navegador."""
     try:
         nome_arquivo_relatorio = REPORT_FILENAME_TEMPLATE.format(
-            nome_pasta_analisada)  # Mantém o nome da pasta analisada no nome do arquivo
-        caminho_relatorio = pasta_base.parent / \
-            nome_arquivo_relatorio  # Salva na pasta pai
+            nome_pasta_analisada).replace('.txt', '.html')  # Mudar para .html
+        caminho_relatorio = pasta_base.parent / nome_arquivo_relatorio
+        
+        # Gerar conteúdo HTML com o mesmo estilo do combinado
+        html_content = f"""<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Relatório de Verificação - {nome_pasta_analisada}</title>
+    {HTML_STYLE}
+</head>
+<body>
+    <h1>Relatório de Verificação de Mensagens</h1>
+    <pre style="font-family: 'Segoe UI', sans-serif; line-height: 1.6; white-space: pre-wrap;">{conteudo_relatorio}</pre>
+</body>
+</html>"""
+        
         with open(caminho_relatorio, 'w', encoding='utf-8') as f:
-            f.write(conteudo_relatorio)
+            f.write(html_content)
+        
+        # Abrir no navegador
+        webbrowser.open(str(caminho_relatorio))
+        
         return caminho_relatorio
     except IOError as e:
         messagebox.showerror(
@@ -399,14 +464,18 @@ def verificar_arquivos() -> None:
         pasta, pasta.name, conteudo_relatorio)
 
     if caminho_relatorio_salvo:
+        # Adicionar à lista de relatórios criados
+        relatorios_criados.append(caminho_relatorio_salvo)
+        
         messagebox.showinfo(
-            "Concluído", f"Verificação finalizada. Relatório salvo em:\n{caminho_relatorio_salvo}")
+            "Concluído", f"Verificação finalizada. Relatório salvo e aberto no navegador:\n{caminho_relatorio_salvo}")
 
         if var_unificar_relatorios.get():  # Verifica o estado do checkbutton
             pasta_para_unificar = caminho_relatorio_salvo.parent
             print(
                 f"INFO: Iniciando unificação de relatórios na pasta: {pasta_para_unificar}")
             # Não é necessário um messagebox aqui, pois o ReportCombiner.run() já informa o usuário.
+            combiner = None
             try:
                 combiner = ReportCombiner(str(pasta_para_unificar))
                 combiner.run()  # Este método já lida com seus próprios pop-ups e logging
@@ -414,45 +483,101 @@ def verificar_arquivos() -> None:
                 # Captura erros na instanciação de ReportCombiner ou outros não tratados por run()
                 messagebox.showerror("Erro na Unificação",
                                      f"Ocorreu um erro inesperado ao iniciar o processo de unificação:\n{e}")
-                if hasattr(combiner, 'logger'):  # Se o logger foi inicializado
+                if combiner and hasattr(combiner, 'logger'):  # Se o logger foi inicializado
                     combiner.logger.exception(
                         "Erro crítico ao tentar unificar relatórios.")
 
-
-# Configuração da janela principal
+# Inicia a janela principal após definição de funções
 root = tk.Tk()
 try:
     root.iconbitmap(ICON_PATH)
 except tk.TclError:
     print(f"Aviso: Ícone '{ICON_PATH}' não encontrado ou formato inválido.")
 root.title("Verificador de Mensagens")
+root.geometry('600x280')
+root.minsize(580, 260)
+root.configure(bg='#f3f6fb')
 
-# Frame principal
-frame = tk.Frame(root, padx=10, pady=10)
-frame.pack()
+style = ttk.Style(root)
+# Usa tema disponível que tenha aparência mais moderna.
+if 'vista' in style.theme_names():
+    style.theme_use('vista')
+elif 'clam' in style.theme_names():
+    style.theme_use('clam')
+
+style.configure('Card.TFrame', background='#f3f6fb')
+style.configure('Header.TLabel', background='#f3f6fb', font=('Segoe UI', 14, 'bold'))
+style.configure('TLabel', background='#f3f6fb', font=('Segoe UI', 10))
+style.configure('TEntry', font=('Segoe UI', 10), padding=6)
+style.configure('TButton', font=('Segoe UI', 10, 'bold'), padding=6)
+style.configure('TCheckbutton', background='#f3f6fb', font=('Segoe UI', 10))
+
+# Estilos personalizados para botões coloridos (removidos pois ttk não suporta background customizado em todos os temas)
+# style.configure('Gold.TButton', background='#FFD700', foreground='black', font=('Segoe UI', 10, 'bold'), padding=6)
+# style.map('Gold.TButton', background=[('active', '#FFC107')])
+
+# style.configure('Green.TButton', background='#32CD32', foreground='white', font=('Segoe UI', 10, 'bold'), padding=6)
+# style.map('Green.TButton', background=[('active', '#228B22')])
+
+frame = ttk.Frame(root, style='Card.TFrame', padding=(18, 14, 18, 14))
+frame.pack(fill='both', expand=True)
+
+header = ttk.Label(frame, text='Verificador de Números de Mensagens', style='Header.TLabel')
+header.grid(row=0, column=0, columnspan=3, pady=(0, 12), sticky='w')
 
 # Widgets
-tk.Label(frame, text="Pasta:").grid(row=0, column=0, sticky="w")
-entry_pasta = tk.Entry(frame, width=50)
-entry_pasta.grid(row=0, column=1, padx=5)
-tk.Button(frame, text="Selecionar",
-          command=selecionar_pasta).grid(row=0, column=2)
+ttk.Label(frame, text='Pasta:').grid(row=1, column=0, sticky='w', pady=(2, 2))
+entry_pasta = ttk.Entry(frame, width=48)
+entry_pasta.grid(row=1, column=1, padx=(0, 8), pady=(2, 2), sticky='w')
+btn_pasta = tk.Button(frame, text='Selecionar', command=selecionar_pasta, bg='#FFD700', fg='black', font=('Segoe UI', 10, 'bold'), padx=6, pady=6)
+btn_pasta.grid(row=1, column=2, padx=(0, 2), pady=(2, 2), sticky='e')
 
-tk.Label(frame, text="Número Inicial:").grid(row=1, column=0, sticky="w")
-entry_inicio = tk.Entry(frame, width=10)
-entry_inicio.grid(row=1, column=1, sticky="w", padx=5)
+ttk.Label(frame, text='Número Inicial:').grid(row=2, column=0, sticky='w', pady=(4, 4))
+entry_inicio = ttk.Entry(frame, width=12)
+entry_inicio.grid(row=2, column=1, sticky='w', pady=(4, 4))
 
-tk.Label(frame, text="Número Final:").grid(row=2, column=0, sticky="w")
-entry_fim = tk.Entry(frame, width=10)
-entry_fim.grid(row=2, column=1, sticky="w", padx=5)
+ttk.Label(frame, text='Número Final:').grid(row=3, column=0, sticky='w', pady=(4, 4))
+entry_fim = ttk.Entry(frame, width=12)
+entry_fim.grid(row=3, column=1, sticky='w', pady=(4, 4))
 
-# Checkbutton para unificar relatórios
-var_unificar_relatorios = tk.BooleanVar()
-check_unificar = tk.Checkbutton(frame, text="Unificar relatórios da pasta pai após verificação",
-                                variable=var_unificar_relatorios)
-check_unificar.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
+var_unificar_relatorios = tk.BooleanVar(value=False)
+check_unificar = ttk.Checkbutton(frame, text='Unificar relatórios da pasta pai após verificação', variable=var_unificar_relatorios)
+check_unificar.grid(row=4, column=0, columnspan=3, sticky='w', pady=(8, 8))
 
-tk.Button(frame, text="Verificar Arquivos", command=verificar_arquivos).grid(
-    row=4, column=0, columnspan=3, pady=10)
+btn_verificar = tk.Button(frame, text='Verificar Arquivos', command=verificar_arquivos, bg='#32CD32', fg='white', font=('Segoe UI', 10, 'bold'), padx=6, pady=6)
+btn_verificar.grid(row=5, column=0, columnspan=3, pady=(6, 0), ipadx=16)
+
+def on_fechar_janela() -> None:
+    """Callback para quando a janela é fechada, pergunta se deseja deletar relatórios."""
+    if relatorios_criados:
+        resposta = messagebox.askyesno(
+            "Fechar Aplicativo",
+            f"Foram criados {len(relatorios_criados)} relatório(s) nesta sessão.\n\n"
+            "Deseja apagar todos os relatórios criados antes de fechar?"
+        )
+        if resposta:
+            deletados = 0
+            erros = 0
+            for relatorio in relatorios_criados:
+                try:
+                    relatorio.unlink()
+                    deletados += 1
+                except Exception as e:
+                    print(f"Erro ao deletar {relatorio}: {e}")
+                    erros += 1
+            if deletados > 0:
+                messagebox.showinfo(
+                    "Relatórios Deletados",
+                    f"{deletados} relatório(s) deletado(s) com sucesso."
+                    + (f"\n{erros} erro(s) ao deletar." if erros > 0 else "")
+                )
+    root.destroy()
+
+# Espaço final
+frame.grid_rowconfigure(6, weight=1)
+frame.grid_columnconfigure(1, weight=1)
+
+# Configurar callback para fechamento da janela
+root.protocol("WM_DELETE_WINDOW", on_fechar_janela)
 
 root.mainloop()

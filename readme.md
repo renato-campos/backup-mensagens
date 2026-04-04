@@ -14,20 +14,19 @@
     *   Expressões Regulares: `re`
     *   Manipulação de Datas: `datetime`
     *   Formato de Relatório (para `relatorio_mensagens`): Markdown (requer a biblioteca `markdown`)
-    *   Temas para GUI (opcional, para `main.py`): `ttkthemes`
     *   Distribuição: Os scripts são fornecidos como executáveis (`.exe`) para Windows, empacotados com ferramentas como PyInstaller (suposição).
 *   **Instruções básicas de uso:**
     *   O projeto é acessado principalmente através do painel de controle `main.exe`.
     *   Cada ferramenta individual (ex: `arquiva_email_gui.exe`, `pastas_diff.exe`) também pode ser executada diretamente.
     *   Para ferramentas com interface gráfica, o usuário geralmente seleciona pastas e/ou insere parâmetros através da GUI.
-    *   Para a ferramenta `arquiva_email.exe` (sem GUI), a pasta de monitoramento é configurada internamente no script (ou no executável compilado com um valor padrão).
+    *   Para a ferramenta `arquiva_email.exe`, a pasta de monitoramento pode ser informada por argumento de linha de comando; se não for informada, a ferramenta solicita a seleção da pasta por diálogo.
 *   **Exemplo de uso:**
     *   **`arquiva_email_gui.exe`**:
         *   Input: Usuário seleciona uma pasta contendo arquivos `.eml` e outros.
         *   Output: Os arquivos são movidos para subpastas `Ano/Ano-Mês` dentro da pasta selecionada, com base na data do e-mail ou data de modificação do arquivo. Logs de erro são gerados em uma subpasta `ERROS`.
     *   **`pastas_diff.exe`**:
         *   Input: Usuário seleciona duas pastas para comparação.
-        *   Output: Um arquivo de relatório (`diferencas_AAAAMMDD_HHMMSS.txt`) é gerado na pasta da primeira seleção, listando arquivos únicos em cada pasta e arquivos com mesmo nome mas conteúdo diferente (comparação de hash).
+        *   Output: Um arquivo de relatório (`comparacao_pastas_AAAAMMDDHHMMSS.txt`) é gerado na primeira pasta selecionada, listando arquivos exclusivos de cada pasta e o total de arquivos em comum.
 *   **Como rodar o projeto:**
     *   Execute `main.exe` para acessar o painel de controle com todas as ferramentas.
     *   Alternativamente, execute o `.exe` específico da ferramenta desejada diretamente.
@@ -48,7 +47,7 @@
     2.  Extraia o conteúdo para uma pasta de sua preferência no seu computador.
     3.  Nenhuma instalação adicional de Python ou bibliotecas é necessária, pois os executáveis são autocontidos.
 *   **Arquivos de Configuração:**
-    *   A ferramenta `arquiva_email.exe` (versão CLI) possui a pasta de monitoramento (`WATCH_FOLDER_PATH_STR`) definida internamente. Para alterar este comportamento, seria necessário modificar o script Python original e recompilar o executável, ou adaptar o script para aceitar o caminho como argumento de linha de comando.
+    *   A ferramenta `arquiva_email.exe` (versão CLI) aceita a pasta de monitoramento por argumento de linha de comando. Sem argumento, solicita a pasta via interface.
     *   As demais ferramentas geralmente solicitam as pastas de trabalho via interface gráfica no momento da execução.
 
 ### Para Desenvolvedores (trabalhando com os scripts `.py`)
@@ -78,7 +77,7 @@ Para cada ferramenta, consulte o respectivo arquivo "Leiame" (PDF) localizado na
 
 1.  **Arquivar E-mails (Pasta Padrão) (`arquiva_email.exe`)**
     *   **Interface:** Linha de Comando (CLI) - executa automaticamente ao ser lançado.
-    *   **Fluxo:** Processa arquivos em uma pasta pré-definida no código (`C:\backup_mensagens` por padrão) e os organiza em subpastas `Ano/Ano-Mês`.
+    *   **Fluxo:** Processa arquivos na pasta informada por argumento ou selecionada via diálogo, organizando em subpastas `Ano/Ano-Mês`.
     *   **Entradas:** Arquivos na pasta monitorada.
     *   **Saídas:** Estrutura de pastas organizada; logs em `ERROS/`.
     *   **Ajuda:** `docs/Leiame - Arquiva e-mail automático.pdf`
@@ -106,16 +105,16 @@ Para cada ferramenta, consulte o respectivo arquivo "Leiame" (PDF) localizado na
 
 5.  **Renomear Arquivos .eml (`renomear_eml.exe`)**
     *   **Interface:** Gráfica (GUI).
-    *   **Fluxo:** Usuário seleciona uma pasta. Arquivos `.eml` são renomeados com base em data, assunto e remetente. Arquivos problemáticos são movidos para subpastas `Problemas` ou `Duplicatas`.
+    *   **Fluxo:** Usuário seleciona uma pasta. Arquivos `.eml` são renomeados com base em data, assunto e remetente. Conflitos são resolvidos com sufixos alfabéticos e arquivos problemáticos vão para `Problemas`.
     *   **Entradas:** Seleção de pasta via GUI.
-    *   **Saídas:** Arquivos `.eml` renomeados; subpastas `Problemas`, `Duplicatas`, `LOGS_RENOMEAR_EML`; janela de resumo.
+    *   **Saídas:** Arquivos `.eml` renomeados; subpastas `Problemas`, `LOGS_RENOMEAR_EML`; janela de resumo.
     *   **Ajuda:** `docs/Leiame - Renomeando e-mails eml.pdf`
 
 6.  **Comparar Conteúdo de Pastas (`pastas_diff.exe`)**
     *   **Interface:** Gráfica (GUI).
     *   **Fluxo:** Usuário seleciona duas pastas. Um relatório de texto é gerado com as diferenças (arquivos únicos, arquivos com mesmo nome mas conteúdo diferente).
     *   **Entradas:** Seleção de duas pastas via GUI.
-    *   **Saídas:** Relatório `diferencas_AAAAMMDD_HHMMSS.txt` na primeira pasta selecionada; logs em `ERROS/` na primeira pasta.
+    *   **Saídas:** Relatório `comparacao_pastas_AAAAMMDDHHMMSS.txt` na primeira pasta selecionada; logs em `ERROS/` na primeira pasta.
     *   **Ajuda:** `docs/Leiame - Diferenças entre as pastas.pdf`
 
 7.  **Relatório de Contagem de Mensagens (`relatorio_mensagens.exe`)**
@@ -164,9 +163,9 @@ Cada script `.py` principal (ex: `arquiva_email.py`, `pastas_diff.py`) represent
 *   **`arquiva_email_gui.py`**: Similar ao `arquiva_email.py`, mas com uma interface gráfica Tkinter para o usuário selecionar a pasta de origem. A lógica de arquivamento é encapsulada em uma classe `FileArchiver`.
 *   **`arquiva_raiz.py`**: Contém a classe `FileMover` (ou similar) que percorre recursivamente uma pasta, move arquivos de subpastas para a raiz, sanitiza nomes, resolve conflitos e remove pastas vazias.
 *   **`arquiva_subpastas.py`**: Contém uma classe `FileArchiver` adaptada para processar arquivos recursivamente dentro de uma estrutura de pastas, organizando-os em subpastas `Ano/Ano-Mês` dentro da própria árvore de diretórios selecionada e removendo pastas vazias.
-*   **`pastas_diff.py`**: Implementa a lógica de comparação de duas árvores de diretórios, identificando arquivos únicos e arquivos com mesmo nome mas conteúdo diferente (usando hash). Gera um relatório em texto.
+*   **`pastas_diff.py`**: Implementa a lógica de comparação de duas árvores de diretórios, identificando arquivos exclusivos por caminho relativo e gerando um relatório em texto.
 *   **`relatorio_mensagens.py`**: Fornece uma GUI para selecionar uma pasta e um intervalo numérico. Verifica arquivos com nomes numéricos sequenciais, gera relatórios de faltantes/duplicados e unifica relatórios `.txt` em um arquivo HTML.
-*   **`renomear_eml.py`**: Especializado em arquivos `.eml`. Extrai informações de cabeçalhos (Data, Assunto, Remetente) e corpo para renomear os arquivos de forma padronizada. Trata arquivos problemáticos e duplicatas.
+*   **`renomear_eml.py`**: Especializado em arquivos `.eml`. Extrai informações de cabeçalhos (Data, Assunto, Remetente) e corpo para renomear os arquivos de forma padronizada. Trata arquivos problemáticos e resolve duplicatas por sufixo.
 
 ### Explicação de Funções/Classes Mais Relevantes
 
@@ -176,7 +175,7 @@ Cada script `.py` principal (ex: `arquiva_email.py`, `pastas_diff.py`) represent
     *   `process_files()` / `process_files_recursively()` / `process_files_in_root()`: Orquestra a varredura e o processamento dos arquivos.
     *   `process_file()` / `process_eml_file()` / `process_other_file()`: Lógica específica para tratar diferentes tipos de arquivos.
     *   `_parse_date()`: Tenta analisar strings de data de e-mails usando `email.utils.parsedate_to_datetime` e `datetime.strptime` com vários formatos.
-    *   `_sanitize_filename()`: Remove caracteres inválidos, prefixos comuns (ex: "msg "), normaliza números e espaços.
+    *   `_sanitize_filename()`: Sanitiza nomes para Windows (CP1252), removendo caracteres inválidos e protegendo contra nomes reservados.
     *   `_truncate_filename()`: Encurta nomes de arquivo para respeitar os limites de comprimento de caminho do sistema operacional, preservando a extensão.
     *   `move_file_to_archive()` / `rename_or_move()`: Lida com a movimentação/renomeação final, incluindo a criação de pastas de destino e a resolução de conflitos de nomes (adicionando sufixos numéricos ou timestamps).
     *   `remove_empty_folders()` (em `arquiva_raiz.py` e `arquiva_subpastas.py`): Remove subpastas que ficaram vazias após o processamento.
@@ -186,7 +185,7 @@ Cada script `.py` principal (ex: `arquiva_email.py`, `pastas_diff.py`) represent
 *   **Lógica de `pastas_diff.py`:**
     *   Usa `os.walk` ou `Path.rglob` para listar arquivos recursivamente.
     *   Compara conjuntos de caminhos relativos para encontrar arquivos únicos.
-    *   Calcula hashes (ex: MD5, SHA256) de arquivos com mesmo nome para verificar se o conteúdo é idêntico.
+    *   Compara os arquivos por caminho relativo para identificar arquivos exclusivos em cada pasta.
 *   **Lógica de `relatorio_mensagens.py`:**
     *   Extrai números do início dos nomes dos arquivos.
     *   Compara a sequência encontrada com o intervalo esperado.
